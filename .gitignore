@@ -1,0 +1,6 @@
+node_modules/
+.bun-tmp/
+*.log
+dist/
+coverage/
+/tmp/

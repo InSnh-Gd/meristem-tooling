@@ -1,0 +1,22 @@
+{
+  "name": "@insnh-gd/meristem-tooling",
+  "version": "0.1.0",
+  "description": "Meristem tooling repo for test/e2e/benchmark orchestration",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "bin": {
+    "meristem-tooling": "./src/cli.ts"
+  },
+  "scripts": {
+    "tooling": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2"
+  }
+}
