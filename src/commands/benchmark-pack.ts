@@ -689,7 +689,7 @@ export const runBenchmarkPackCommand = async (argv: readonly string[] = []): Pro
   // 这段 warmup 执行逻辑用于先让运行时和热点路径进入稳定状态，warmup 样本只落盘留档但不参与最终统计。
   for (let round = 1; round <= options.warmupRounds; round += 1) {
     console.log(`[benchmark:run:pack] warmup round ${round}/${options.warmupRounds}`);
-    const output = runCommand(['bun', 'run', toolingCliPath, 'bench', 'baseline'], coreDir);
+    const output = runCommand(['bun', 'run', toolingCliPath, 'bench', 'baseline', '--single-sample'], coreDir);
     const report = parseBaselineReport(output, `warmup round ${round}`);
     await Bun.write(join(warmupDir, `run${round}.json`), JSON.stringify(report, null, 2));
     if (round < options.warmupRounds && options.intervalMs > 0) {
@@ -700,7 +700,7 @@ export const runBenchmarkPackCommand = async (argv: readonly string[] = []): Pro
   // 这段 measured 执行逻辑只记录固定轮次样本，并基于这些样本计算 median/trimmed mean，避免单次高点或低点扭曲结论。
   for (let round = 1; round <= options.rounds; round += 1) {
     console.log(`[benchmark:run:pack] measured round ${round}/${options.rounds}`);
-    const output = runCommand(['bun', 'run', toolingCliPath, 'bench', 'baseline'], coreDir);
+    const output = runCommand(['bun', 'run', toolingCliPath, 'bench', 'baseline', '--single-sample'], coreDir);
     const report = parseBaselineReport(output, `measured round ${round}`);
     await Bun.write(join(measuredDir, `run${round}.json`), JSON.stringify(report, null, 2));
     for (const sample of report.samples) {
