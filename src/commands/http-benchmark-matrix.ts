@@ -3,7 +3,7 @@ import {
   type HttpBenchmarkConfig,
   type HttpBenchmarkTarget,
 } from '../bench/http-benchmark';
-import { createCoreScenarioAdapter } from '../bench/core-scenario-adapter';
+import { createCoreScenarioAdapter, type JoinBenchmarkMode } from '../bench/core-scenario-adapter';
 
 type MatrixReport = {
   generatedAt: string;
@@ -15,6 +15,7 @@ type MatrixReport = {
   targetSource: 'adapter-default' | 'file';
   targetsPath: string | null;
   coreBaseUrl: string;
+  joinMode: JoinBenchmarkMode;
   config: HttpBenchmarkConfig;
   results: Awaited<ReturnType<typeof runHttpBenchmarkMatrix>>['results'];
   ranking: Awaited<ReturnType<typeof runHttpBenchmarkMatrix>>['ranking'];
@@ -34,6 +35,7 @@ const parseNumber = (value: string | undefined, fallback: number): number => {
 const parseArgs = (argv: readonly string[]): {
   targetsPath: string | null;
   coreBaseUrl: string;
+  joinMode: JoinBenchmarkMode;
   outPath: string | null;
   config: HttpBenchmarkConfig;
 } => {
@@ -41,6 +43,7 @@ const parseArgs = (argv: readonly string[]): {
 
   let targetsPath: string | null = null;
   let coreBaseUrl = 'http://127.0.0.1:3000';
+  let joinMode: JoinBenchmarkMode = 'same-hwid';
   let outPath: string | null = null;
   let requests = 400;
   let concurrency = 40;
@@ -69,6 +72,14 @@ const parseArgs = (argv: readonly string[]): {
         outPath = args.shift() ?? null;
         break;
       }
+      case '--join-mode': {
+        const parsedJoinMode = args.shift();
+        if (parsedJoinMode === 'same-hwid' || parsedJoinMode === 'unique-hwid') {
+          joinMode = parsedJoinMode;
+          break;
+        }
+        throw new Error(`invalid --join-mode value: ${parsedJoinMode ?? ''}`);
+      }
       case '--requests': {
         requests = parseNumber(args.shift(), requests);
         break;
@@ -86,7 +97,7 @@ const parseArgs = (argv: readonly string[]): {
         break;
       }
       case '--help': {
-        console.log('Usage: tooling bench http-matrix [--targets <path>] [--out <path>] [--requests <n>] [--concurrency <n>] [--warmup <n>] [--timeout-ms <n>]');
+        console.log('Usage: tooling bench http-matrix [--targets <path>] [--out <path>] [--join-mode same-hwid|unique-hwid] [--requests <n>] [--concurrency <n>] [--warmup <n>] [--timeout-ms <n>]');
         process.exit(0);
       }
       default:
@@ -97,6 +108,7 @@ const parseArgs = (argv: readonly string[]): {
   return {
     targetsPath,
     coreBaseUrl,
+    joinMode,
     outPath,
     config: {
       requests: Math.max(1, Math.floor(requests)),
@@ -142,7 +154,7 @@ const parseTargets = (raw: unknown): HttpBenchmarkTarget[] => {
 
 export const runHttpBenchmarkMatrixCommand = async (argv: readonly string[] = []): Promise<void> => {
   const parsed = parseArgs(argv);
-  const scenarioAdapter = createCoreScenarioAdapter();
+  const scenarioAdapter = createCoreScenarioAdapter({ joinMode: parsed.joinMode });
   let targets: readonly HttpBenchmarkTarget[];
   let targetSource: MatrixReport['targetSource'];
 
@@ -176,6 +188,7 @@ export const runHttpBenchmarkMatrixCommand = async (argv: readonly string[] = []
     targetSource,
     targetsPath: parsed.targetsPath,
     coreBaseUrl: parsed.coreBaseUrl,
+    joinMode: scenarioAdapter.joinMode,
     config: parsed.config,
     results: matrix.results,
     ranking: matrix.ranking,

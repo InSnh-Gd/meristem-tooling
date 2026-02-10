@@ -1,11 +1,19 @@
 export type HttpMethod = 'GET' | 'POST';
 
+export type HttpBenchmarkBodyFactoryContext = {
+  requestIndex: number;
+};
+
+export type HttpBenchmarkBodyFactory = (
+  context: HttpBenchmarkBodyFactoryContext,
+) => unknown;
+
 export type HttpBenchmarkTarget = {
   name: string;
   url: string;
   method: HttpMethod;
   headers?: Readonly<Record<string, string>>;
-  body?: unknown;
+  body?: unknown | HttpBenchmarkBodyFactory;
 };
 
 export type HttpBenchmarkConfig = {
@@ -151,9 +159,25 @@ const withTimeoutSignal = (timeoutMs: number): AbortSignal => {
   return AbortSignal.timeout(resolvedTimeout);
 };
 
-const buildRequestInit = (target: HttpBenchmarkTarget, timeoutMs: number): RequestInit => {
+const resolveRequestBody = (
+  body: HttpBenchmarkTarget['body'],
+  requestIndex: number,
+): unknown => {
+  if (typeof body === 'function') {
+    return body({ requestIndex });
+  }
+  return body;
+};
+
+const buildRequestInit = (
+  target: HttpBenchmarkTarget,
+  timeoutMs: number,
+  requestIndex: number,
+): RequestInit => {
+  const resolvedBody = resolveRequestBody(target.body, requestIndex);
+  const hasBody = resolvedBody !== undefined;
   const headers =
-    target.body === undefined
+    !hasBody
       ? target.headers
       : {
           'content-type': 'application/json',
@@ -163,7 +187,7 @@ const buildRequestInit = (target: HttpBenchmarkTarget, timeoutMs: number): Reque
   return {
     method: target.method,
     headers,
-    body: target.body === undefined ? undefined : JSON.stringify(target.body),
+    body: !hasBody ? undefined : JSON.stringify(resolvedBody),
     signal: withTimeoutSignal(timeoutMs),
   };
 };
@@ -183,13 +207,14 @@ const parseResponseBody = async (response: Response): Promise<unknown> => {
 const runSingleRequest = async (
   target: HttpBenchmarkTarget,
   timeoutMs: number,
+  requestIndex: number,
   fetcher: FetchLike,
   classifySuccess?: HttpBenchmarkSuccessClassifier,
 ): Promise<{
   ok: boolean;
   durationMs: number;
 }> => {
-  const requestInit = buildRequestInit(target, timeoutMs);
+  const requestInit = buildRequestInit(target, timeoutMs, requestIndex);
   const startedAt = performance.now();
 
   try {
@@ -242,8 +267,15 @@ const runWorker = async (
   let failureCount = 0;
 
   while (state.nextRequest < totalRequests) {
+    const requestIndex = state.nextRequest;
     state.nextRequest += 1;
-    const result = await runSingleRequest(target, timeoutMs, fetcher, classifySuccess);
+    const result = await runSingleRequest(
+      target,
+      timeoutMs,
+      requestIndex,
+      fetcher,
+      classifySuccess,
+    );
     latencies.push(clampToNonNegative(result.durationMs));
     if (result.ok) {
       successCount += 1;
@@ -299,7 +331,7 @@ export const runHttpBenchmarkTarget = async (
   const timeoutMs = Math.max(100, Math.floor(config.timeoutMs));
 
   for (let index = 0; index < warmupRequests; index += 1) {
-    await runSingleRequest(target, timeoutMs, fetcher, classifySuccess);
+    await runSingleRequest(target, timeoutMs, index, fetcher, classifySuccess);
   }
 
   const state = {
