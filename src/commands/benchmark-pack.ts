@@ -4,6 +4,11 @@ import {
   createCoreScenarioAdapter,
   type HttpMatrixTargetStats,
 } from '../bench/core-scenario-adapter';
+import {
+  createTimestampedTestArtifactDir,
+  resolveTestArtifactPath,
+  resolveWorkspaceRoot,
+} from '../utils/test-artifacts';
 
 type BenchmarkSample = {
   name: string;
@@ -149,7 +154,7 @@ type PackReport = {
   };
 };
 
-const DEFAULT_COMPARE_BASELINE_PATH = '/tmp/meristem-core-benchmark-baseline.json';
+const DEFAULT_COMPARE_BASELINE_PATH = 'meristem-test-baseline.json';
 const DEFAULT_PROFILE_COMPARE_PATH = 'benchmarks/baseline-profile.json';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -269,7 +274,7 @@ Options:
   --warmup-rounds <n>          Warmup rounds (discarded, default: 5)
   --rounds <n>                 Measured rounds (default: 12)
   --interval-ms <n>            Interval between rounds in ms (default: 1000)
-  --out-dir <path>             Output directory (default: /tmp/meristem-benchmark-pack-<timestamp>)
+  --out-dir <path>             Output directory (default: <workspace>/meristem-test-output/meristem-test-pack-<timestamp>)
   --compare-path <path>        Comparison file path (supports profile/legacy baseline json)
   --profile-out <path>         Output path for generated baseline profile json
   --with-http                  Enable HTTP matrix benchmark run
@@ -438,11 +443,11 @@ const formatNumber = (value: number): string => value.toFixed(2);
 
 const formatPercent = (value: number): string => `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 
-const normalizeOutDir = (outDir: string | null): string => {
+const normalizeOutDir = (workspaceRoot: string, outDir: string | null): string => {
   if (outDir && outDir.length > 0) {
-    return resolve(outDir);
+    return resolve(workspaceRoot, outDir);
   }
-  return `/tmp/meristem-benchmark-pack-${Date.now()}`;
+  return createTimestampedTestArtifactDir('meristem-test-pack');
 };
 
 const parseBaselineReport = (raw: string, source: string): BaselineReport => {
@@ -512,8 +517,9 @@ const resolveComparisonPath = async (options: PackOptions, coreDir: string): Pro
   if (await Bun.file(defaultProfile).exists()) {
     return defaultProfile;
   }
-  if (await Bun.file(DEFAULT_COMPARE_BASELINE_PATH).exists()) {
-    return DEFAULT_COMPARE_BASELINE_PATH;
+  const defaultFallback = resolveTestArtifactPath(DEFAULT_COMPARE_BASELINE_PATH);
+  if (await Bun.file(defaultFallback).exists()) {
+    return defaultFallback;
   }
   return null;
 };
@@ -659,11 +665,11 @@ const buildSummaryMarkdown = (report: PackReport): string => {
 export const runBenchmarkPackCommand = async (argv: readonly string[] = []): Promise<void> => {
   const options = parseArgs(argv);
   const scenarioAdapter = createCoreScenarioAdapter();
-  const workspaceRoot = resolve(process.env.MERISTEM_WORKSPACE_ROOT ?? process.cwd());
+  const workspaceRoot = resolveWorkspaceRoot();
   const coreDir = join(workspaceRoot, 'meristem-core');
   const repoRoot = workspaceRoot;
   const toolingCliPath = join(workspaceRoot, 'meristem-tooling', 'src', 'cli.ts');
-  const outDir = normalizeOutDir(options.outDir);
+  const outDir = normalizeOutDir(workspaceRoot, options.outDir);
   const warmupDir = join(outDir, 'warmup');
   const measuredDir = join(outDir, 'measured');
   const baselineProfilePath =

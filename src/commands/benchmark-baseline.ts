@@ -1,7 +1,8 @@
 import { runWasmPocBenchmarks, type WasmPocBenchmarkResult } from '../bench/wasm-poc';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { resolveTestArtifactPath } from '../utils/test-artifacts';
 
 type BenchmarkSample = {
   name: string;
@@ -184,7 +185,7 @@ const runSingleRound = (options: BaselineRunOptions): BenchmarkSample[] => {
    * 这里固定 payload 与迭代次数，先测工作区磁盘，再在可用时测 /dev/shm（内存文件系统）。
    * 若宿主机不存在 /dev/shm 或权限不足，降级为只保留磁盘样本，避免基准流程因环境差异中断。
    */
-  const workspaceTmpDir = resolve(process.cwd(), '.codex', 'tmp');
+  const workspaceTmpDir = resolveTestArtifactPath('meristem-test-tmp');
   samples.push(runFileIoBenchmark('file-io-workspace-disk', options.ioIterations, workspaceTmpDir, ioPayload));
 
   if (existsSync('/dev/shm')) {

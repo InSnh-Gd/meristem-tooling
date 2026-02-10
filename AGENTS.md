@@ -24,3 +24,8 @@
   - `tooling test integration` -> `tooling test integration-core`
   - `tooling bench http` -> `tooling bench http-matrix`
   - `tooling bench typecheck` -> `tooling bench ts-matrix`
+
+## 测试产物目录约定
+- 默认测试产物根目录：`<MERISTEM_WORKSPACE_ROOT>/meristem-test-output`
+- 可选覆盖：`MERISTEM_TEST_ARTIFACT_ROOT`（相对路径按 workspace root 解析，绝对路径直用）
+- 目录命名要求：默认生成目录统一使用 `meristem-test*` 前缀，便于清理与归档

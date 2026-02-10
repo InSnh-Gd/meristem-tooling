@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, openSync, closeSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import { resolveTestArtifactPath, resolveWorkspaceRoot } from '../utils/test-artifacts';
 
 export type CommandResult = Readonly<{
   code: number;
@@ -35,11 +36,11 @@ const CORE_URL_DEFAULT = 'http://localhost:3000';
  * 优先读取 `MERISTEM_WORKSPACE_ROOT`，未提供时回退当前执行目录，
  * 这样无论是本地 `bun run` 还是未来 JSR 包调用，都能稳定定位 core/client/shared。
  */
-export const ROOT_DIR = path.resolve(process.env.MERISTEM_WORKSPACE_ROOT ?? process.cwd());
+export const ROOT_DIR = resolveWorkspaceRoot();
 export const CORE_DIR = path.join(ROOT_DIR, 'meristem-core');
 export const CLIENT_DIR = path.join(ROOT_DIR, 'meristem-client');
 export const SHARED_DIR = path.join(ROOT_DIR, 'meristem-shared');
-export const RUNTIME_DIR = path.join(ROOT_DIR, '.codex', 'e2e-runtime');
+export const RUNTIME_DIR = resolveTestArtifactPath('meristem-test-e2e-runtime');
 export const RUNTIME_FILE = path.join(RUNTIME_DIR, 'runtime.json');
 
 const composeChoices: ReadonlyArray<ReadonlyArray<string>> = [
