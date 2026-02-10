@@ -20,3 +20,7 @@
 - `tooling e2e preflight|run|assert|cleanup|full`
 - `tooling bench baseline|http-matrix|pack|ts-matrix`
 - `tooling reliability run`
+- 兼容别名（仅保留一轮并输出 deprecation 提示）：
+  - `tooling test integration` -> `tooling test integration-core`
+  - `tooling bench http` -> `tooling bench http-matrix`
+  - `tooling bench typecheck` -> `tooling bench ts-matrix`

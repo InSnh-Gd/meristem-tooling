@@ -19,6 +19,11 @@ type ParsedCli = {
   command: readonly string[];
 };
 
+const KNOWN_DOMAINS = ['test', 'e2e', 'bench', 'reliability'] as const;
+
+const isKnownDomain = (value: string): boolean =>
+  KNOWN_DOMAINS.includes(value as (typeof KNOWN_DOMAINS)[number]);
+
 const printHelp = (): void => {
   console.log(`
 Meristem Tooling CLI
@@ -31,11 +36,16 @@ Domains:
   e2e         preflight | run | assert | cleanup | full
   bench       baseline | http-matrix | pack | ts-matrix
   reliability run
+
+Compatibility (deprecated aliases for one transition round):
+  test integration      -> test integration-core
+  bench http            -> bench http-matrix
+  bench typecheck       -> bench ts-matrix
 `);
 };
 
 const parseCli = (argv: readonly string[]): ParsedCli => {
-  const args = [...argv];
+  const args = [...argv.slice(2)];
   let workspaceRoot = process.env.MERISTEM_WORKSPACE_ROOT ?? process.cwd();
 
   while (args.length > 0) {
@@ -51,20 +61,60 @@ const parseCli = (argv: readonly string[]): ParsedCli => {
     workspaceRoot = value;
   }
 
+  /**
+   * 兼容入口归一化：
+   * - 场景 A：直接执行脚本（`tooling bench baseline`）=> `argv.slice(2)` 即标准命令。
+   * - 场景 B：`bun -e "import '.../cli'" bench baseline` => 第一个域名会落在 `argv[1]`，需要补回。
+   * - 场景 C：工作区脚本采用桥接前缀（`tooling bench baseline`）时，允许显式 `tooling` 前缀并去除。
+   *
+   * 这样做是为了让主仓/子仓/CI 三种调用方式使用同一份 CLI 逻辑，避免因 argv 形态差异导致误判。
+   */
+  let normalizedCommand = [...args];
+  const argvFirst = argv[1];
+  if (argvFirst && (isKnownDomain(argvFirst) || argvFirst === 'tooling')) {
+    const firstToken = normalizedCommand[0];
+    const shouldRestoreFirstToken =
+      firstToken !== undefined && !isKnownDomain(firstToken) && firstToken !== 'tooling';
+    if (shouldRestoreFirstToken) {
+      normalizedCommand = [argvFirst, ...normalizedCommand];
+    }
+  }
+  if (normalizedCommand[0] === 'tooling') {
+    normalizedCommand = normalizedCommand.slice(1);
+  }
+
   return {
     workspaceRoot,
-    command: args,
+    command: normalizedCommand,
   };
 };
 
 const run = async (): Promise<void> => {
-  const parsed = parseCli(process.argv.slice(2));
+  const parsed = parseCli(process.argv);
   process.env.MERISTEM_WORKSPACE_ROOT = parsed.workspaceRoot;
 
-  const [domain, action, ...rest] = parsed.command;
-  if (!domain) {
+  let [domain, action, ...rest] = parsed.command;
+  if (!domain || domain === '--help' || domain === '-h' || domain === 'help') {
     printHelp();
     return;
+  }
+
+  /**
+   * 兼容别名映射：
+   * - 允许旧入口短名继续运行一轮，输出 deprecation 提示并映射到标准动作名。
+   * - 失败策略是“明确失败而非静默忽略”，防止 CI 误以为命令成功。
+   */
+  if (domain === 'test' && action === 'integration') {
+    console.warn('[tooling] deprecated: `test integration` -> use `test integration-core`');
+    action = 'integration-core';
+  }
+  if (domain === 'bench' && action === 'http') {
+    console.warn('[tooling] deprecated: `bench http` -> use `bench http-matrix`');
+    action = 'http-matrix';
+  }
+  if (domain === 'bench' && action === 'typecheck') {
+    console.warn('[tooling] deprecated: `bench typecheck` -> use `bench ts-matrix`');
+    action = 'ts-matrix';
   }
 
   if (domain === 'test' && action === 'workspace') {
