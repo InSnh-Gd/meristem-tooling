@@ -6,7 +6,6 @@ import {
 } from '../bench/core-scenario-adapter';
 import {
   createTimestampedTestArtifactDir,
-  resolveTestArtifactPath,
   resolveWorkspaceRoot,
 } from '../utils/test-artifacts';
 
@@ -38,7 +37,7 @@ type BaselineStats = {
 };
 
 type BaselineComparison = {
-  referenceType: 'single-sample' | 'profile';
+  referenceType: 'profile';
   referenceMedianOpsPerSecond: number;
   referenceTrimmedMeanOpsPerSecond: number;
   medianDeltaPct: number;
@@ -71,17 +70,11 @@ type BaselineProfile = {
   metrics: readonly BaselineProfileMetric[];
 };
 
-type ComparisonSource =
-  | {
-      mode: 'single-sample';
-      sourcePath: string;
-      values: Map<string, number>;
-    }
-  | {
-      mode: 'profile';
-      sourcePath: string;
-      values: Map<string, BaselineProfileMetric>;
-    };
+type ComparisonSource = {
+  mode: 'profile';
+  sourcePath: string;
+  values: Map<string, BaselineProfileMetric>;
+};
 
 type BaselineSummaryItem = {
   name: string;
@@ -108,6 +101,36 @@ type PackOptions = {
   httpConcurrency: number;
   httpWarmup: number;
   httpTimeoutMs: number;
+  gateMaxCv: number;
+  gateMaxMedianRegressionPct: number;
+  gateRequireComparison: boolean;
+};
+
+export type BenchmarkGateInputMetric = {
+  name: string;
+  coefficientOfVariation: number;
+  medianDeltaPct: number | null;
+};
+
+export type BenchmarkGatePolicy = {
+  maxCv: number;
+  maxMedianRegressionPct: number;
+  requireComparison: boolean;
+};
+
+export type BenchmarkGateViolation = {
+  metric: string;
+  rule: 'cv' | 'median-regression' | 'missing-comparison';
+  actual: number | null;
+  threshold: number | null;
+  message: string;
+};
+
+export type BenchmarkGateResult = {
+  passed: boolean;
+  compared: boolean;
+  policy: BenchmarkGatePolicy;
+  violations: readonly BenchmarkGateViolation[];
 };
 
 type PackReport = {
@@ -127,8 +150,11 @@ type PackReport = {
     archive: boolean;
     comparePath: string | null;
     profileOut: string | null;
-    comparisonMode: 'none' | 'single-sample' | 'profile';
+    comparisonMode: 'none' | 'profile';
     comparisonResolvedPath: string | null;
+    gateMaxCv: number;
+    gateMaxMedianRegressionPct: number;
+    gateRequireComparison: boolean;
   };
   paths: {
     outDir: string;
@@ -152,9 +178,9 @@ type PackReport = {
     command: readonly string[];
     logPath: string | null;
   };
+  gate: BenchmarkGateResult;
 };
 
-const DEFAULT_COMPARE_BASELINE_PATH = 'meristem-test-baseline.json';
 const DEFAULT_PROFILE_COMPARE_PATH = 'benchmarks/baseline-profile.json';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -238,6 +264,14 @@ const parseIntStrict = (raw: string, option: string, minimum: number): number =>
   return parsed;
 };
 
+const parseFloatStrict = (raw: string, option: string, minimum: number): number => {
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < minimum) {
+    throw new Error(`${option} must be a number >= ${minimum}, got "${raw}"`);
+  }
+  return parsed;
+};
+
 const parseBooleanFlag = (raw: string, option: string): boolean => {
   if (raw === 'true' || raw === '1') {
     return true;
@@ -263,6 +297,9 @@ const defaultOptions = (): PackOptions => ({
   httpConcurrency: 80,
   httpWarmup: 80,
   httpTimeoutMs: 3000,
+  gateMaxCv: 0.35,
+  gateMaxMedianRegressionPct: 20,
+  gateRequireComparison: false,
 });
 
 const printHelp = (): void => {
@@ -275,7 +312,7 @@ Options:
   --rounds <n>                 Measured rounds (default: 12)
   --interval-ms <n>            Interval between rounds in ms (default: 1000)
   --out-dir <path>             Output directory (default: <workspace>/meristem-test-output/meristem-test-pack-<timestamp>)
-  --compare-path <path>        Comparison file path (supports profile/legacy baseline json)
+  --compare-path <path>        Comparison profile path (baseline-profile.json)
   --profile-out <path>         Output path for generated baseline profile json
   --with-http                  Enable HTTP matrix benchmark run
   --with-reliability           Enable root-level e2e reliability run (bun run tooling:e2e:run:workspace)
@@ -285,6 +322,9 @@ Options:
   --http-concurrency <n>       HTTP concurrency per target (default: 80)
   --http-warmup <n>            HTTP warmup requests (default: 80)
   --http-timeout-ms <n>        HTTP request timeout in ms (default: 3000)
+  --gate-max-cv <n>            Gate threshold: max allowed coefficient of variation (default: 0.35)
+  --gate-max-median-regression-pct <n> Gate threshold: max allowed median regression percent (default: 20)
+  --gate-require-comparison <true|false> Require comparison profile for gate evaluation (default: false)
   --help                       Show this help
 `);
 };
@@ -371,6 +411,25 @@ const parseArgs = (argv: readonly string[]): PackOptions => {
       }
       case '--http-timeout-ms': {
         options.httpTimeoutMs = parseIntStrict(args.shift() ?? '', '--http-timeout-ms', 100);
+        break;
+      }
+      case '--gate-max-cv': {
+        options.gateMaxCv = parseFloatStrict(args.shift() ?? '', '--gate-max-cv', 0);
+        break;
+      }
+      case '--gate-max-median-regression-pct': {
+        options.gateMaxMedianRegressionPct = parseFloatStrict(
+          args.shift() ?? '',
+          '--gate-max-median-regression-pct',
+          0,
+        );
+        break;
+      }
+      case '--gate-require-comparison': {
+        options.gateRequireComparison = parseBooleanFlag(
+          args.shift() ?? '',
+          '--gate-require-comparison',
+        );
         break;
       }
       case '--help': {
@@ -503,23 +562,33 @@ const parseHttpMatrixReport = (raw: string, source: string): HttpMatrixReport =>
   return { targets };
 };
 
-const toOpsMap = (report: BaselineReport): Map<string, number> =>
-  new Map(report.samples.map((sample) => [sample.name, sample.opsPerSecond]));
-
 const toProfileMetricMap = (profile: BaselineProfile): Map<string, BaselineProfileMetric> =>
   new Map(profile.metrics.map((metric) => [metric.name, metric]));
+
+export const decodeComparisonSource = (decoded: unknown, comparePath: string): ComparisonSource => {
+  if (isBaselineProfile(decoded)) {
+    return {
+      mode: 'profile',
+      sourcePath: comparePath,
+      values: toProfileMetricMap(decoded),
+    };
+  }
+  if (isBaselineReport(decoded)) {
+    throw new Error(
+      `legacy single-sample baseline is not supported: ${comparePath}. Use baseline profile generated by tooling bench pack.`,
+    );
+  }
+  throw new Error(`unsupported compare file format: ${comparePath}`);
+};
 
 const resolveComparisonPath = async (options: PackOptions, coreDir: string): Promise<string | null> => {
   if (options.comparePath !== null) {
     return resolve(coreDir, options.comparePath);
   }
+  // 逻辑块：默认仅接受 profile 基线，明确淘汰 single-sample 回退路径，避免离群样本污染门禁判断。
   const defaultProfile = resolve(coreDir, DEFAULT_PROFILE_COMPARE_PATH);
   if (await Bun.file(defaultProfile).exists()) {
     return defaultProfile;
-  }
-  const defaultFallback = resolveTestArtifactPath(DEFAULT_COMPARE_BASELINE_PATH);
-  if (await Bun.file(defaultFallback).exists()) {
-    return defaultFallback;
   }
   return null;
 };
@@ -528,7 +597,7 @@ const maybeLoadComparisonSource = async (
   options: PackOptions,
   coreDir: string,
 ): Promise<ComparisonSource | null> => {
-  // 这段对比源解析逻辑优先读取“区间 profile”，仅在缺省场景下回退到 legacy 单次样本，避免继续被离群高点误导。
+  // 逻辑块：对比源解析只接受 profile，任何 single-sample 基线都直接失败，强制统一到多轮统计口径。
   const comparePath = await resolveComparisonPath(options, coreDir);
   if (comparePath === null) {
     return null;
@@ -539,21 +608,7 @@ const maybeLoadComparisonSource = async (
   }
   const compareRaw = await compareFile.text();
   const decoded = JSON.parse(compareRaw) as unknown;
-  if (isBaselineProfile(decoded)) {
-    return {
-      mode: 'profile',
-      sourcePath: comparePath,
-      values: toProfileMetricMap(decoded),
-    };
-  }
-  if (isBaselineReport(decoded)) {
-    return {
-      mode: 'single-sample',
-      sourcePath: comparePath,
-      values: toOpsMap(decoded),
-    };
-  }
-  throw new Error(`unsupported compare file format: ${comparePath}`);
+  return decodeComparisonSource(decoded, comparePath);
 };
 
 const buildComparison = (
@@ -563,20 +618,6 @@ const buildComparison = (
 ): BaselineComparison | null => {
   if (source === null) {
     return null;
-  }
-  if (source.mode === 'single-sample') {
-    const baselineOpsPerSecond = source.values.get(metricName);
-    if (baselineOpsPerSecond === undefined) {
-      return null;
-    }
-    return {
-      referenceType: 'single-sample',
-      referenceMedianOpsPerSecond: baselineOpsPerSecond,
-      referenceTrimmedMeanOpsPerSecond: baselineOpsPerSecond,
-      medianDeltaPct: ((stats.medianOpsPerSecond - baselineOpsPerSecond) / baselineOpsPerSecond) * 100,
-      trimmedMeanDeltaPct:
-        ((stats.trimmedMeanOpsPerSecond - baselineOpsPerSecond) / baselineOpsPerSecond) * 100,
-    };
   }
   const profileMetric = source.values.get(metricName);
   if (!profileMetric) {
@@ -597,6 +638,71 @@ const buildComparison = (
   };
 };
 
+export const evaluateBenchmarkGate = (
+  metrics: readonly BenchmarkGateInputMetric[],
+  compared: boolean,
+  policy: BenchmarkGatePolicy,
+): BenchmarkGateResult => {
+  const violations: BenchmarkGateViolation[] = [];
+
+  // 逻辑块：门禁策略同时检查“稳定性(CV)”与“性能退化(median delta)”。
+  // 若开启 requireComparison 且未提供 profile，对比缺失会直接触发失败，避免无基线时误判为通过。
+  if (!compared && policy.requireComparison) {
+    violations.push({
+      metric: '*',
+      rule: 'missing-comparison',
+      actual: null,
+      threshold: null,
+      message: 'comparison profile is required by gate policy',
+    });
+  }
+
+  for (const metric of metrics) {
+    if (metric.coefficientOfVariation > policy.maxCv) {
+      violations.push({
+        metric: metric.name,
+        rule: 'cv',
+        actual: metric.coefficientOfVariation,
+        threshold: policy.maxCv,
+        message: `coefficient of variation exceeds threshold`,
+      });
+    }
+
+    if (!compared) {
+      continue;
+    }
+
+    if (metric.medianDeltaPct === null) {
+      violations.push({
+        metric: metric.name,
+        rule: 'missing-comparison',
+        actual: null,
+        threshold: null,
+        message: 'missing comparison metric in baseline profile',
+      });
+      continue;
+    }
+
+    const regressionLimit = -policy.maxMedianRegressionPct;
+    if (metric.medianDeltaPct < regressionLimit) {
+      violations.push({
+        metric: metric.name,
+        rule: 'median-regression',
+        actual: metric.medianDeltaPct,
+        threshold: regressionLimit,
+        message: `median regression exceeds threshold`,
+      });
+    }
+  }
+
+  return {
+    passed: violations.length === 0,
+    compared,
+    policy,
+    violations,
+  };
+};
+
 const buildSummaryMarkdown = (report: PackReport): string => {
   const lines: string[] = [
     '# Benchmark Pack Summary',
@@ -613,6 +719,9 @@ const buildSummaryMarkdown = (report: PackReport): string => {
     `- ComparisonMode: ${report.options.comparisonMode}`,
     `- ComparisonSource: ${report.options.comparisonResolvedPath ?? 'none'}`,
     `- ProfileOutput: ${report.paths.baselineProfileJson}`,
+    `- GateMaxCv: ${report.options.gateMaxCv}`,
+    `- GateMaxMedianRegressionPct: ${report.options.gateMaxMedianRegressionPct}`,
+    `- GateRequireComparison: ${report.options.gateRequireComparison}`,
     '',
     '## Baseline',
     '',
@@ -644,8 +753,31 @@ const buildSummaryMarkdown = (report: PackReport): string => {
     }
   }
 
-  if (report.options.comparisonMode === 'single-sample') {
-    lines.push('', '> Warning: comparison source is single-sample; prefer profile mode to avoid outlier bias.');
+  lines.push(
+    '',
+    '## Gate',
+    '',
+    `- Passed: ${report.gate.passed}`,
+    `- Compared: ${report.gate.compared}`,
+    `- Policy.MaxCv: ${report.gate.policy.maxCv}`,
+    `- Policy.MaxMedianRegressionPct: ${report.gate.policy.maxMedianRegressionPct}`,
+    `- Policy.RequireComparison: ${report.gate.policy.requireComparison}`,
+  );
+  if (report.gate.violations.length > 0) {
+    lines.push(
+      '',
+      '| Metric | Rule | Actual | Threshold | Message |',
+      '| --- | --- | ---: | ---: | --- |',
+    );
+    for (const violation of report.gate.violations) {
+      const actualText =
+        violation.actual === null ? 'N/A' : formatNumber(violation.actual);
+      const thresholdText =
+        violation.threshold === null ? 'N/A' : formatNumber(violation.threshold);
+      lines.push(
+        `| ${violation.metric} | ${violation.rule} | ${actualText} | ${thresholdText} | ${violation.message} |`,
+      );
+    }
   }
 
   lines.push('', '## Extra Runs', '', `- HTTP Matrix Enabled: ${report.http.enabled}`, `- Reliability Enabled: ${report.reliability.enabled}`);
@@ -732,6 +864,22 @@ export const runBenchmarkPackCommand = async (argv: readonly string[] = []): Pro
         comparison,
       };
     });
+
+  // 逻辑块：门禁输入以“多轮统计摘要”为唯一来源，不再读取单次样本。
+  // 这样 median 回归与 CV 判定都基于相同轮次窗口，避免口径漂移导致的误报/漏报。
+  const gate = evaluateBenchmarkGate(
+    baselineSummary.map((item) => ({
+      name: item.name,
+      coefficientOfVariation: item.stats.coefficientOfVariation,
+      medianDeltaPct: item.comparison?.medianDeltaPct ?? null,
+    })),
+    comparisonSource !== null,
+    {
+      maxCv: options.gateMaxCv,
+      maxMedianRegressionPct: options.gateMaxMedianRegressionPct,
+      requireComparison: options.gateRequireComparison,
+    },
+  );
 
   const runtime = scenarioAdapter.collectRuntimeMeta();
 
@@ -824,6 +972,9 @@ export const runBenchmarkPackCommand = async (argv: readonly string[] = []): Pro
       profileOut: options.profileOut,
       comparisonMode: comparisonSource?.mode ?? 'none',
       comparisonResolvedPath: comparisonSource?.sourcePath ?? null,
+      gateMaxCv: options.gateMaxCv,
+      gateMaxMedianRegressionPct: options.gateMaxMedianRegressionPct,
+      gateRequireComparison: options.gateRequireComparison,
     },
     paths: {
       outDir,
@@ -866,6 +1017,7 @@ export const runBenchmarkPackCommand = async (argv: readonly string[] = []): Pro
       command: scenarioAdapter.reliabilityCommand,
       logPath: reliabilityOutputPath,
     },
+    gate,
   };
 
   const markdown = buildSummaryMarkdown(report);
@@ -876,6 +1028,16 @@ export const runBenchmarkPackCommand = async (argv: readonly string[] = []): Pro
   console.log(`[benchmark:run:pack] summary md   => ${summaryMdPath}`);
   if (archivePath) {
     console.log(`[benchmark:run:pack] archive      => ${archivePath}`);
+  }
+  if (!gate.passed) {
+    const preview = gate.violations
+      .slice(0, 3)
+      .map((violation) => `${violation.metric}:${violation.rule}`)
+      .join(', ');
+    throw new Error(
+      `benchmark gate failed with ${gate.violations.length} violation(s)` +
+        (preview.length > 0 ? ` (${preview})` : ''),
+    );
   }
 };
 
