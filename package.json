@@ -1,6 +1,6 @@
 {
   "name": "@insnh-gd/meristem-tooling",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Meristem tooling repo for test/e2e/benchmark orchestration",
   "type": "module",
   "private": true,
