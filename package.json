@@ -13,7 +13,8 @@
   },
   "scripts": {
     "tooling": "bun run src/cli.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify:standards-sync": "bun run scripts/verify-standards-sync.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

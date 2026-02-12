@@ -6,7 +6,32 @@ const isNatsAvailable = (): boolean => {
   return process.env.NATS_URL !== undefined && process.env.NATS_URL !== '';
 };
 
+const runStandardsSyncVerification = async (): Promise<number> => {
+  const verifyProcess = spawn('bun', ['run', 'scripts/verify-standards-sync.ts'], {
+    stdio: 'inherit',
+    env: { ...process.env },
+  });
+
+  return new Promise((resolve) => {
+    verifyProcess.on('close', (code) => {
+      resolve(code ?? 1);
+    });
+  });
+};
+
 export const runWorkspaceTests = async (): Promise<number> => {
+  /**
+   * 逻辑块：先执行标准一致性门禁，再执行测试矩阵。
+   * - 目的：在单测/集成测试之前拦截文档-实现常量漂移。
+   * - 原因：Phase 2.5 要求把标准漂移转成可执行阻断项。
+   * - 降级：校验失败立即返回非零退出码，不继续跑测试以避免误判。
+   */
+  const verifyCode = await runStandardsSyncVerification();
+  if (verifyCode !== 0) {
+    console.error('[tooling:test:workspace] standards sync verification failed');
+    return verifyCode;
+  }
+
   const hasNats = isNatsAvailable();
 
   if (!hasNats) {
