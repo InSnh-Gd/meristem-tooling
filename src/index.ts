@@ -1,5 +1,7 @@
 export { runWorkspaceTests } from './commands/run-tests';
 export { runCoreIntegrationTestsCommand } from './commands/test-integration';
+export { runMnetE2ECommand } from './commands/mnet-e2e';
+export { runMnetMeshCommand } from './commands/mnet-mesh';
 export { runBaselineCommand } from './commands/benchmark-baseline';
 export { runHttpBenchmarkMatrixCommand } from './commands/http-benchmark-matrix';
 export { runBenchmarkPackCommand } from './commands/benchmark-pack';

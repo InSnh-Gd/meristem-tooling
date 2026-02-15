@@ -2,6 +2,8 @@
 
 import { runWorkspaceTests } from './commands/run-tests';
 import { runCoreIntegrationTestsCommand } from './commands/test-integration';
+import { runMnetE2ECommand } from './commands/mnet-e2e';
+import { runMnetMeshCommand } from './commands/mnet-mesh';
 import { runBaselineCommand } from './commands/benchmark-baseline';
 import { runHttpBenchmarkMatrixCommand } from './commands/http-benchmark-matrix';
 import { runBenchmarkPackCommand } from './commands/benchmark-pack';
@@ -32,7 +34,7 @@ Usage:
   tooling [--workspace-root <path>] <domain> <action> [...options]
 
 Domains:
-  test        workspace | integration-core
+  test        workspace | integration-core | mnet-e2e | mnet-mesh
   e2e         preflight | run | assert | cleanup | full
   bench       baseline | http-matrix | pack | ts-matrix
   reliability run
@@ -123,6 +125,14 @@ const run = async (): Promise<void> => {
   }
   if (domain === 'test' && action === 'integration-core') {
     await runCoreIntegrationTestsCommand(rest);
+    return;
+  }
+  if (domain === 'test' && action === 'mnet-e2e') {
+    await runMnetE2ECommand(rest);
+    return;
+  }
+  if (domain === 'test' && action === 'mnet-mesh') {
+    await runMnetMeshCommand(rest);
     return;
   }
   if (domain === 'e2e' && action === 'preflight') {
