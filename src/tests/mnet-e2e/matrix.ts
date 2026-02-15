@@ -99,6 +99,7 @@ const ensureMnetPluginTests = (
         'src/cli/meristem.ts',
         '--home',
         coreHome,
+        'plugin',
         '-S',
         'com.meristem.mnet',
       ],
