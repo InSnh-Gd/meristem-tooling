@@ -15,6 +15,7 @@ import { assertE2E } from './e2e/assert';
 import { cleanupE2E } from './e2e/cleanup';
 import { runFullE2EWithCleanup } from './e2e/full';
 import { readRuntimeState } from './e2e/lib';
+import { resolveWorkspaceRoot } from './utils/test-artifacts';
 
 type ParsedCli = {
   workspaceRoot: string;
@@ -48,7 +49,7 @@ Compatibility (deprecated aliases for one transition round):
 
 const parseCli = (argv: readonly string[]): ParsedCli => {
   const args = [...argv.slice(2)];
-  let workspaceRoot = process.env.MERISTEM_WORKSPACE_ROOT ?? process.cwd();
+  let workspaceRoot = process.env.MERISTEM_WORKSPACE_ROOT ?? resolveWorkspaceRoot();
 
   while (args.length > 0) {
     const token = args[0];

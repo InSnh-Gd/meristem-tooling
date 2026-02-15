@@ -1,5 +1,6 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { runCommand } from '../../e2e/lib';
 import { resolveTestArtifactPath, resolveWorkspaceRoot } from '../../utils/test-artifacts';
 
 type MatrixScenario = Readonly<{
@@ -42,12 +43,96 @@ export type MnetE2EReport = Readonly<{
 const resolveDefaultReportPath = (): string =>
   resolveTestArtifactPath('meristem-test-mnet-e2e', 'mnet-e2e-report.json');
 
-const scenarios: readonly MatrixScenario[] = [
+const textDecoder = new TextDecoder();
+
+const decodeOutput = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return textDecoder.decode(value);
+  }
+  return '';
+};
+
+/**
+ * 逻辑块：统一 Bun 子命令执行包装（复用 tooling e2e 命令执行器）。
+ * - 目的：复用已有 PATH/环境处理逻辑，避免重复维护子进程兼容细节。
+ * - 原因：matrix 与 e2e 同属 orchestration 层，应该共用同一命令执行基线。
+ * - 失败路径：命令退出码非 0 时保留 stdout/stderr，交由上层报告具体场景失败。
+ */
+const runBunCommand = (
+  args: readonly string[],
+  cwd: string,
+  env: Readonly<Record<string, string | undefined>> = {},
+) => {
+  return runCommand('bun', [...args], { cwd, env: { ...env } });
+};
+
+const resolveCoreHome = (workspaceRoot: string): string => {
+  const envHome = process.env.MERISTEM_HOME;
+  if (envHome && envHome.trim().length > 0) {
+    return resolve(envHome.trim());
+  }
+  return resolve(workspaceRoot, 'meristem-core');
+};
+
+/**
+ * 逻辑块：矩阵前置插件自检与按需安装。
+ * - 目的：测试入口统一从 Core 管理目录读取，不再依赖工作区根 plugins 目录。
+ * - 原因：插件独立仓后，矩阵执行前必须确保插件已按 CLI 规则安装到 MERISTEM_HOME。
+ * - 失败路径：sync 失败或关键测试文件缺失时立即抛错，避免矩阵“空跑”误报通过。
+ */
+const ensureMnetPluginTests = (
+  workspaceRoot: string,
+): Readonly<{ derpTestPath: string; lifecycleTestPath: string; coreHome: string }> => {
+  const coreHome = resolveCoreHome(workspaceRoot);
+  const pluginRoot = resolve(coreHome, 'plugins', 'com.meristem.mnet');
+  const derpTestPath = resolve(pluginRoot, '__tests__', 'derp-modes.test.ts');
+  const lifecycleTestPath = resolve(pluginRoot, '__tests__', 'headscale-lifecycle.test.ts');
+
+  if (!existsSync(derpTestPath) || !existsSync(lifecycleTestPath)) {
+    const coreDir = resolve(workspaceRoot, 'meristem-core');
+    const sync = runBunCommand(
+      [
+        'run',
+        'src/cli/meristem.ts',
+        '--home',
+        coreHome,
+        'plugin',
+        'sync',
+        '--plugin',
+        'com.meristem.mnet',
+      ],
+      coreDir,
+      {},
+    );
+
+    if (sync.code !== 0) {
+      const stdout = decodeOutput(sync.stdout).trim();
+      const stderr = decodeOutput(sync.stderr).trim();
+      const details = [stdout, stderr].filter((item) => item.length > 0).join('\n');
+      throw new Error(`failed to sync com.meristem.mnet via core CLI: ${details}`);
+    }
+  }
+
+  if (!existsSync(derpTestPath) || !existsSync(lifecycleTestPath)) {
+    throw new Error(
+      `m-net plugin test files are missing under ${pluginRoot}, expected derp/headscale tests`,
+    );
+  }
+
+  return { derpTestPath, lifecycleTestPath, coreHome };
+};
+
+const buildScenarios = (
+  mnetTests: Readonly<{ derpTestPath: string; lifecycleTestPath: string }>,
+): readonly MatrixScenario[] => [
   {
     id: 'derp-self-hosted-only',
     category: 'derp',
     description: 'DERP self-hosted-only mode behavior',
-    command: ['bun', 'test', 'plugins/meristem-plugin-mnet/__tests__/derp-modes.test.ts'],
+    command: ['test', mnetTests.derpTestPath],
     env: {
       MERISTEM_MNET_DERP_MODE: 'self-hosted-only',
     },
@@ -56,7 +141,7 @@ const scenarios: readonly MatrixScenario[] = [
     id: 'derp-public-only',
     category: 'derp',
     description: 'DERP public-only mode behavior',
-    command: ['bun', 'test', 'plugins/meristem-plugin-mnet/__tests__/derp-modes.test.ts'],
+    command: ['test', mnetTests.derpTestPath],
     env: {
       MERISTEM_MNET_DERP_MODE: 'public-only',
     },
@@ -65,7 +150,7 @@ const scenarios: readonly MatrixScenario[] = [
     id: 'derp-hybrid',
     category: 'derp',
     description: 'DERP hybrid mode behavior',
-    command: ['bun', 'test', 'plugins/meristem-plugin-mnet/__tests__/derp-modes.test.ts'],
+    command: ['test', mnetTests.derpTestPath],
     env: {
       MERISTEM_MNET_DERP_MODE: 'hybrid',
     },
@@ -74,19 +159,19 @@ const scenarios: readonly MatrixScenario[] = [
     id: 'ipv6-dual-stack',
     category: 'ip',
     description: 'IPv6-only and dual-stack tunnel planning',
-    command: ['bun', 'test', 'meristem-client/src/__tests__/wireguard-dual-stack.test.ts'],
+    command: ['test', 'meristem-client/src/__tests__/wireguard-dual-stack.test.ts'],
   },
   {
     id: 'fault-headscale-crash',
     category: 'fault',
     description: 'Headscale crash/restart budget handling',
-    command: ['bun', 'test', 'plugins/meristem-plugin-mnet/__tests__/headscale-lifecycle.test.ts'],
+    command: ['test', mnetTests.lifecycleTestPath],
   },
   {
     id: 'fault-derp-down',
     category: 'fault',
     description: 'DERP down fail-fast behavior for missing public source',
-    command: ['bun', 'test', 'plugins/meristem-plugin-mnet/__tests__/derp-modes.test.ts'],
+    command: ['test', mnetTests.derpTestPath],
     env: {
       MERISTEM_MNET_DERP_FORCE_DOWN: 'true',
     },
@@ -95,7 +180,7 @@ const scenarios: readonly MatrixScenario[] = [
     id: 'fault-path-degrade',
     category: 'fault',
     description: 'Path degrade fallback from direct to relay',
-    command: ['bun', 'test', 'meristem-client/src/__tests__/wireguard-dual-stack.test.ts'],
+    command: ['test', 'meristem-client/src/__tests__/wireguard-dual-stack.test.ts'],
     env: {
       MERISTEM_NETWORK_EXTREME_MODE: 'true',
     },
@@ -127,27 +212,29 @@ const toPercentiles = (values: readonly number[]): PercentileSet => ({
 
 const runScenario = (workspaceRoot: string, scenario: MatrixScenario): ScenarioResult => {
   const startedAt = performance.now();
-  const [command, ...args] = scenario.command;
-  const result = Bun.spawnSync({
-    cmd: [command, ...args],
-    cwd: workspaceRoot,
-    stdout: 'inherit',
-    stderr: 'inherit',
-    env: {
-      ...process.env,
-      MERISTEM_WORKSPACE_ROOT: workspaceRoot,
-      ...(scenario.env ?? {}),
-    },
+  const result = runBunCommand(scenario.command, workspaceRoot, {
+    MERISTEM_WORKSPACE_ROOT: workspaceRoot,
+    ...(scenario.env ?? {}),
   });
+  const stdout = decodeOutput(result.stdout);
+  const stderr = decodeOutput(result.stderr);
+  if (stdout.trim().length > 0) {
+    process.stdout.write(stdout);
+  }
+  if (stderr.trim().length > 0) {
+    process.stderr.write(stderr);
+  }
   const finishedAt = performance.now();
+
+  const exitCode = result.code;
 
   return {
     id: scenario.id,
     category: scenario.category,
     description: scenario.description,
     durationMs: finishedAt - startedAt,
-    passed: result.exitCode === 0,
-    exitCode: result.exitCode,
+    passed: exitCode === 0,
+    exitCode,
   };
 };
 
@@ -155,6 +242,8 @@ export const runMnetE2EMatrix = async (
   options: Readonly<{ outPath?: string; writeDocPath?: string }> = {},
 ): Promise<MnetE2EReport> => {
   const workspaceRoot = resolveWorkspaceRoot();
+  const mnetTests = ensureMnetPluginTests(workspaceRoot);
+  const scenarios = buildScenarios(mnetTests);
   const scenarioResults: ScenarioResult[] = [];
 
   /**
