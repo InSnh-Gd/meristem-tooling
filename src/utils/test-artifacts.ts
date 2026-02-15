@@ -1,10 +1,38 @@
+import { existsSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 export const DEFAULT_TEST_ARTIFACT_ROOT = 'meristem-test-output';
 const DEFAULT_TIMESTAMP_DIR_PREFIX = 'meristem-test-output';
 
-export const resolveWorkspaceRoot = (): string =>
-  resolve(process.env.MERISTEM_WORKSPACE_ROOT ?? process.cwd());
+const hasWorkspaceShape = (root: string): boolean =>
+  existsSync(join(root, 'meristem-core'))
+  && existsSync(join(root, 'meristem-client'))
+  && existsSync(join(root, 'meristem-shared'));
+
+/**
+ * 逻辑块：工作区根目录推断。
+ * - 优先级：显式环境变量 > 当前目录 > 当前目录父级（兼容在 meristem-tooling 子仓直接执行）。
+ * - 目的：减少本地手动设置 MERISTEM_WORKSPACE_ROOT 的心智负担。
+ * - 失败路径：若候选均不满足多仓结构，则回退当前目录并由后续命令给出缺失路径错误。
+ */
+export const resolveWorkspaceRoot = (): string => {
+  const envRoot = process.env.MERISTEM_WORKSPACE_ROOT;
+  if (envRoot && envRoot.trim().length > 0) {
+    return resolve(envRoot);
+  }
+
+  const cwd = resolve(process.cwd());
+  if (hasWorkspaceShape(cwd)) {
+    return cwd;
+  }
+
+  const parent = resolve(cwd, '..');
+  if (hasWorkspaceShape(parent)) {
+    return parent;
+  }
+
+  return cwd;
+};
 
 const normalizeOverridePath = (workspaceRoot: string, rawOverride: string): string => {
   const trimmed = rawOverride.trim();

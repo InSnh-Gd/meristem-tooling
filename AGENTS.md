@@ -3,6 +3,15 @@
 ## 目标
 - 本仓负责测试/基准/E2E 编排，不承载业务运行时核心逻辑。
 - 通过 `MERISTEM_WORKSPACE_ROOT` 指向主工作区，驱动 `meristem-core/client/shared`。
+- 承接跨仓验证责任：凡需跨进程或跨仓协同（Core+Client+NATS+Mongo）的测试，优先落到本仓。
+
+## 测试分层边界
+- 不承接业务仓纯单元测试（应留在 `meristem-core` / `meristem-client` / `meristem-shared`）。
+- 重点承接：
+  - 端到端流程（join/task/result/plugin lifecycle）
+  - 跨仓集成场景（协议联调、契约回归）
+  - 基准、可靠性与故障注入
+- 新增测试前先判断是否“单仓即可验证”；若否，放入 tooling。
 
 ## 约束
 - Runtime: Bun-only。
@@ -17,6 +26,8 @@
 ## 命令契约
 - `tooling test workspace`
 - `tooling test integration-core`
+- `tooling test mnet-e2e`
+- `tooling test mnet-mesh`
 - `tooling e2e preflight|run|assert|cleanup|full`
 - `tooling bench baseline|http-matrix|pack|ts-matrix`
 - `tooling reliability run`
